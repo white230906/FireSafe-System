@@ -57,6 +57,10 @@ unsigned long lastCloudAttempt = 0;
 unsigned long lastWiFiAttempt = 0;
 bool firstCloudAttempt = true;
 
+// Last status successfully written to the Blynk Event Timeline.
+// Starting with SAFE prevents an unnecessary SAFE event at boot.
+String lastLoggedStatus = "SAFE";
+
 // A remote door request is applied AFTER fresh sensor readings.
 bool remoteDoorCommandPending = false;
 bool remoteDoorOpenRequested = false;
@@ -293,6 +297,36 @@ void maintainBlynkConnection() {// duy trì kết nối
   }
 }
 
+void logBlynkStatusChange(float temperature,
+                          bool flameDetected,
+                          bool smokeDetected,
+                          const String &status) {
+  // Keep the event pending while offline. It will be logged after reconnect.
+  if (!Blynk.connected() || status == lastLoggedStatus) return;
+
+  String message = "Status=" + status +
+                   ", Temp=" + String(temperature, 1) + "C" +
+                   ", Flame=" + String(flameDetected ? 1 : 0) +
+                   ", SmokeGas=" + String(smokeDetected ? 1 : 0) +
+                   ", Door=" + String(doorOpen ? "OPEN" : "CLOSED");
+
+  if (status == "DANGER") {
+    Blynk.logEvent("fire_danger", message);
+  }
+  else if (status == "WARNING") {
+    Blynk.logEvent("fire_warning", message);
+  }
+  else if (status == "SAFE") {
+    Blynk.logEvent("system_safe", message);
+  }
+  else {
+    return;
+  }
+
+  lastLoggedStatus = status;
+  Serial.println("Blynk event logged: " + message);
+}
+
 void sendBlynkData(float temperature,//gửi dữ liệu lên blynk
                    bool flameDetected,
                    bool smokeDetected,
@@ -516,6 +550,8 @@ void loop() {
     doorStateDirty = true; // Restore V7 if a CLOSE request was rejected.
   }
 
+  logBlynkStatusChange(
+      temperature, flameDetected, smokeDetected, status);
   sendBlynkData(temperature, flameDetected, smokeDetected, status);
   delay(50);
 }
