@@ -45,36 +45,6 @@
 float TEMP_WARNING = 40.0;
 float TEMP_DANGER = 45.0;
 
-// Multi-criteria fire confirmation settings.
-const float TEMP_CRITICAL = 58.0;
-const float TEMP_CLEAR_HYSTERESIS = 2.0;
-const float RAPID_RISE_C_PER_MIN = 10.0;
-
-const unsigned long FLAME_CONFIRM_TIME = 2000;
-const unsigned long MULTI_SENSOR_CONFIRM_TIME = 3000;
-const unsigned long CRITICAL_TEMP_CONFIRM_TIME = 5000;
-const unsigned long RAPID_RISE_CONFIRM_TIME = 2000;
-const unsigned long SAFE_CONFIRM_TIME = 5000;
-const unsigned long TEMP_RATE_SAMPLE_INTERVAL = 10000;
-
-enum FireState {
-  FIRE_SAFE,
-  FIRE_WARNING,
-  FIRE_DANGER
-};
-
-FireState currentFireState = FIRE_SAFE;
-unsigned long flameActiveSince = 0;
-unsigned long multiSensorActiveSince = 0;
-unsigned long criticalTempActiveSince = 0;
-unsigned long rapidRiseActiveSince = 0;
-unsigned long safeConditionSince = 0;
-
-bool temperatureRateInitialized = false;
-float temperatureRateReference = 0.0;
-float temperatureRatePerMinute = 0.0;
-unsigned long temperatureRateReferenceTime = 0;
-
 // ESP32 connects to a 2.4 GHz Wi-Fi network. (gồm tên mạng và mật khẩu)
 char ssid[] = WIFI_SSID;
 char pass[] = WIFI_PASSWORD;
@@ -122,10 +92,6 @@ bool lcdAvailable = false;
 // Function prototypes (also compatible with Arduino's auto-prototypes).
 void setDoor(bool open);
 void updateDoor(bool danger);
-FireState evaluateFireState(bool flameDetected,
-                            bool smokeDetected,
-                            float temperature);
-String fireStateToString(FireState state);
 
 // ============ LCD FUNCTIONS ============
 
@@ -219,132 +185,23 @@ float readTemperature() {
   return voltageMv / 10.0;
 }
 
-bool conditionHeldFor(bool active,
-                      unsigned long &activeSince,
-                      unsigned long requiredTime,
-                      unsigned long now) {
-  if (!active) {
-    activeSince = 0;
-    return false;
-  }
-
-  if (activeSince == 0) {
-    activeSince = now;
-    return false;
-  }
-
-  return now - activeSince >= requiredTime;
-}
-
-void updateTemperatureRate(float temperature, unsigned long now) {
-  if (!temperatureRateInitialized) {
-    temperatureRateInitialized = true;
-    temperatureRateReference = temperature;
-    temperatureRateReferenceTime = now;
-    temperatureRatePerMinute = 0.0;
-    return;
-  }
-
-  unsigned long elapsed = now - temperatureRateReferenceTime;
-  if (elapsed < TEMP_RATE_SAMPLE_INTERVAL) return;
-
-  temperatureRatePerMinute =
-      (temperature - temperatureRateReference) * 60000.0 / elapsed;
-  temperatureRateReference = temperature;
-  temperatureRateReferenceTime = now;
-}
-
-FireState evaluateFireState(bool flameDetected,
-                            bool smokeDetected,
-                            float temperature) {
-  unsigned long now = millis();
-  updateTemperatureRate(temperature, now);
-
-  bool highTemperature = temperature >= TEMP_DANGER;
-  bool criticalTemperature = temperature >= TEMP_CRITICAL;
-
-  int activeCriteria = 0;
-  if (flameDetected) activeCriteria++;
-  if (smokeDetected) activeCriteria++;
-  if (highTemperature) activeCriteria++;
-
-  bool flameConfirmed = conditionHeldFor(
-      flameDetected, flameActiveSince, FLAME_CONFIRM_TIME, now);
-  bool multiSensorConfirmed = conditionHeldFor(
-      activeCriteria >= 2,
-      multiSensorActiveSince,
-      MULTI_SENSOR_CONFIRM_TIME,
-      now);
-  bool criticalTemperatureConfirmed = conditionHeldFor(
-      criticalTemperature,
-      criticalTempActiveSince,
-      CRITICAL_TEMP_CONFIRM_TIME,
-      now);
-  bool rapidTemperatureRiseDetected =
-      temperature >= TEMP_WARNING &&
-      temperatureRatePerMinute >= RAPID_RISE_C_PER_MIN;
-  bool rapidTemperatureRiseConfirmed = conditionHeldFor(
-      rapidTemperatureRiseDetected,
-      rapidRiseActiveSince,
-      RAPID_RISE_CONFIRM_TIME,
-      now);
-
-  bool dangerConfirmed = flameConfirmed ||
-                         multiSensorConfirmed ||
-                         criticalTemperatureConfirmed ||
-                         rapidTemperatureRiseConfirmed;
-
-  bool warningDetected = flameDetected ||
-                         smokeDetected ||
-                         temperature >= TEMP_WARNING;
-
-  bool safeCondition = !flameDetected &&
-                       !smokeDetected &&
-                       temperature <=
-                           TEMP_WARNING - TEMP_CLEAR_HYSTERESIS;
-  bool safeConfirmed = conditionHeldFor(
-      safeCondition, safeConditionSince, SAFE_CONFIRM_TIME, now);
-
-  if (dangerConfirmed) {
-    currentFireState = FIRE_DANGER;
-  }
-  else if (currentFireState == FIRE_DANGER) {
-    // Keep DANGER latched until every input is safely clear.
-    if (safeConfirmed) currentFireState = FIRE_SAFE;
-  }
-  else if (warningDetected) {
-    currentFireState = FIRE_WARNING;
-  }
-  else if (safeConfirmed) {
-    currentFireState = FIRE_SAFE;
-  }
-
-  return currentFireState;
-}
-
-String fireStateToString(FireState state) {
-  if (state == FIRE_DANGER) return "DANGER";
-  if (state == FIRE_WARNING) return "WARNING";
-  return "SAFE";
-}
-
 // ============ OUTPUT CONTROL ============
 
-void controlOutputs(FireState state) {
+void controlOutputs(bool danger, float temperature) {
 
   // Turn off LEDs
   digitalWrite(LED_GREEN, LOW);
   digitalWrite(LED_YELLOW, LOW);
   digitalWrite(LED_RED, LOW);
 
-  if (state == FIRE_DANGER) {
+  if (danger) {
 
     // DANGER: Red LED + continuous buzzer
     digitalWrite(LED_RED, HIGH);
 
     digitalWrite(BUZZER_PIN, HIGH);
   }
-  else if (state == FIRE_WARNING) {
+  else if (temperature >= TEMP_WARNING) {
 
     // WARNING: Yellow LED
     digitalWrite(LED_YELLOW, HIGH);
@@ -377,9 +234,7 @@ void controlOutputs(FireState state) {
 
 BLYNK_WRITE(V4) {//nhận ngưỡng Warning từ Blynk
   int value = param.asInt();
-  if (value >= 30 &&
-      value < TEMP_DANGER &&
-      value < TEMP_CRITICAL) {
+  if (value >= 30 && value <= 60 && value < TEMP_DANGER) {
     TEMP_WARNING = value;
     Serial.printf("Blynk WARNING threshold: %d C\n", value);
   } else {
@@ -390,7 +245,7 @@ BLYNK_WRITE(V4) {//nhận ngưỡng Warning từ Blynk
 
 BLYNK_WRITE(V5) { //nhận ngưỡng Danger từ Blynk
   int value = param.asInt();
-  if (value > TEMP_WARNING && value < TEMP_CRITICAL) {
+  if (value >= 35 && value <= 90 && value > TEMP_WARNING) {
     TEMP_DANGER = value;
     Serial.printf("Blynk DANGER threshold: %d C\n", value);
   } else {
@@ -566,16 +421,29 @@ void loop() {
 
   float temperature = readTemperature();
 
-  // 2. Determine state using multiple criteria and confirmation time.
-  FireState state = evaluateFireState(
-      flameDetected, smokeDetected, temperature);
-  String status = fireStateToString(state);
-  bool danger = state == FIRE_DANGER;
-
+  // 2. Determine danger
+  bool danger = flameDetected ||
+                smokeDetected ||
+                temperature >= TEMP_DANGER;
+  
   updateDoor(danger);
 
+
+  // 3. Determine status
+  String status;
+
+  if (danger) {
+    status = "DANGER";
+  }
+  else if (temperature >= TEMP_WARNING) {
+    status = "WARNING";
+  }
+  else {
+    status = "SAFE";
+  }
+
   // 4. Control LED and buzzer
-  controlOutputs(state);
+  controlOutputs(danger, temperature);
 
   // 5. LCD display
   String line1 = "Temp: " +
@@ -606,16 +474,12 @@ void loop() {
   Serial.print("Status: ");
   Serial.println(status);
 
-  Serial.print("Temperature rise: ");
-  Serial.print(temperatureRatePerMinute, 1);
-  Serial.println(" C/min");
-
   Serial.print("Buzzer D15: ");
 
-  if (state == FIRE_DANGER) {
+  if (danger) {
     Serial.println("CONTINUOUS");
   }
-  else if (state == FIRE_WARNING) {
+  else if (temperature >= TEMP_WARNING) {
     Serial.println("INTERMITTENT");
   }
   else {
@@ -627,15 +491,16 @@ void loop() {
   // Local warning outputs are updated BEFORE servicing Wi-Fi/cloud.
   maintainBlynkConnection();
 
-  // Re-apply threshold changes received in Blynk.run() this cycle.
-  FireState stateNow = evaluateFireState(
-      flameDetected, smokeDetected, temperature);
-  if (stateNow != state) {
-    state = stateNow;
-    status = fireStateToString(state);
-    danger = state == FIRE_DANGER;
+  // Re-apply any threshold changes received in Blynk.run() this cycle.
+  bool dangerNow = flameDetected || smokeDetected ||
+                   temperature >= TEMP_DANGER;
+  String statusNow = dangerNow ? "DANGER" :
+                     (temperature >= TEMP_WARNING ? "WARNING" : "SAFE");
+  if (dangerNow != danger || statusNow != status) {
+    danger = dangerNow;
+    status = statusNow;
     if (danger) setDoor(true); // Protect door when threshold drops.
-    controlOutputs(state);
+    controlOutputs(danger, temperature);
     lcdPrintLine(1, "F:" + String(flameDetected ? 1 : 0) +
                     " S:" + String(smokeDetected ? 1 : 0) + " " + status);
   }
