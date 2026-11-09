@@ -1,8 +1,8 @@
 // ======== BLYNK DEVICE CONFIG ========
-// Replace the auth token with the newly regenerated private token.
+#include "secrets.h"
+
 #define BLYNK_TEMPLATE_ID "TMPL6u6Ah-ML6"
 #define BLYNK_TEMPLATE_NAME "Fire Detection System"
-#define BLYNK_AUTH_TOKEN "j89ISk3T0w8wrdOniohquh8mFd378S_5"
 #define BLYNK_PRINT Serial
 //thằng này giúp hiển thị thông tin debug trên Serial Monitor,
 //giúp lập trình viên theo dõi trạng thái của thiết bị và các thông báo từ Blynk.
@@ -19,21 +19,6 @@
 //thư viện giúp ESP32 kết nối với Blynk Cloud
 // ============ PIN DEFINITIONS ============
 
-// Sensors
-#define FLAME_PIN 19
-#define MQ2_PIN 18
-#define LM35_PIN 34
-
-// Output devices
-#define BUZZER_PIN 15
-
-#define LED_GREEN 25
-#define LED_YELLOW 26
-#define LED_RED 27
-
-// LCD I2C
-#define SDA_PIN 21
-#define SCL_PIN 22
 
 // Servo & Button
 #define SERVO_PIN 32
@@ -46,8 +31,8 @@ float TEMP_WARNING = 40.0;
 float TEMP_DANGER = 45.0;
 
 // ESP32 connects to a 2.4 GHz Wi-Fi network. (gồm tên mạng và mật khẩu)
-char ssid[] = "Mr.RL";
-char pass[] = "12344321";
+char ssid[] = WIFI_SSID;
+char pass[] = WIFI_PASSWORD;
 
 const unsigned long CLOUD_SEND_INTERVAL = 2000;
 const unsigned long CLOUD_RETRY_INTERVAL = 5000;
